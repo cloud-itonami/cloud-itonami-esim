@@ -129,7 +129,7 @@ actually fail.
 ## Run
 
 ```bash
-clojure -M:test        # 50 tests / 249 assertions (includes both HTTP surfaces)
+clojure -M:test        # 62 tests / 278 assertions (both HTTP surfaces + the store contract)
 clojure -M:lint        # clj-kondo, 0 errors 0 warnings
 clojure -M:run         # end-to-end demo: offline, no model, no network
 clojure -M:serve       # consent on 127.0.0.1:1339, operator on :1340
@@ -207,7 +207,7 @@ up `executed? false`.
 | | |
 |---|---|
 | Role | governed actor (Advisor ⊣ Governor ⊣ append-only ledger) |
-| Tests | 50 tests / 249 assertions, all green (incl. both HTTP surfaces on real sockets) |
+| Tests | 62 tests / 278 assertions, all green (both HTTP surfaces on real sockets + the store contract) |
 | Lint | clj-kondo 0 errors, 0 warnings |
 | Store backends | MemStore only — Datomic/kotoba-server is the next seam |
 | Jurisdiction spec-basis | none at R0, deliberately (see Coverage) |
