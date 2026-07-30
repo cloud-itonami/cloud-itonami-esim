@@ -1,0 +1,49 @@
+{:itonami.blueprint/id "cloud-itonami-esim"
+ :itonami.blueprint/name "eSIM Remote Provisioning (Profile Lifecycle Management)"
+ :itonami.blueprint/domain :communication/esim-provisioning
+ :itonami.blueprint/license "AGPL-3.0-or-later"
+ :itonami.blueprint/social-impact [:connectivity :digital-inclusion :sim-swap-fraud-resistance]
+ :itonami.blueprint/governor :esim-provisioning-governor
+ :itonami.blueprint/robotics false
+ :itonami.blueprint/required-technologies [:identity :forms :dmn :bpmn :audit-ledger :esim :phone]
+ :itonami.blueprint/optional-technologies [:card]
+ :itonami.blueprint/status :public-oss
+ :itonami.blueprint/maturity :implemented
+ :itonami.blueprint/implemented-slice
+ "eSIM Provisioning Advisor ⊣ eSIM Provisioning Governor, langgraph-clj
+ StateGraph (langgraph.graph, esimprovisioning.operation/build), append-only
+ audit ledger (esimprovisioning.store/ledger + append-ledger!, MemStore only at
+ R0 -- a Datomic/kotoba-server backend is the next seam and is where
+ kotoba-lang/langchain-store becomes a dependency). Compiled StateGraph
+ (:intake -> :advise -> :govern -> :decide -+-> :commit / :request-approval ->
+ :commit / :hold) with `interrupt-before #{:request-approval}` + in-memory
+ checkpointer for real human-in-the-loop resume, proven end-to-end by
+ test/esimprovisioning/operation_test.clj and the demo runner.
+
+ Six ops, all :effect :propose only: :coverage/report, :euicc/register,
+ :profile/download, :profile/lifecycle, :smds/register, :ownership/transfer.
+ Three of them (:profile/download, :profile/lifecycle, :ownership/transfer) are
+ ABSENT from every phase's :auto set including phase 3 -- a permanent
+ structural fact, not a rollout milestone: they change whether a real person's
+ line works, and an ownership transfer is the primary SIM-swap fraud path.
+
+ What distinguishes this actor from its siblings: kotoba-lang/esim is the
+ single authority for identifier structure (EID / ICCID) and profile
+ reachability, and this actor holds NO second copy of those rules. The
+ governor recomputes every ground-truth fact through the library and over
+ recorded store state, never off the proposal; and the STORE applies the
+ outcome the GOVERNOR computed, never the profile vector the advisor claimed.
+ This is deliberate: the sibling cloud-itonami-card-issuing reimplemented Luhn
+ locally although kotoba.card/luhn-valid? existed, and kept its lifecycle
+ allowlist only in its governor so kotoba.card.lifecycle had to be corrected to
+ mirror it after the fact (2026-07-30).
+
+ Deliberately absent at R0: a per-jurisdiction spec-basis catalog. The
+ analogous thing would be telecom licensing plus GSMA SAS-SM accreditation, but
+ seeding it would mean asserting jurisdiction-specific requirements this build
+ has not independently verified -- the exact failure cloud-itonami-isic-6120's
+ ADR-0002 records. Coverage is reported as zero rather than invented.
+
+ 31 tests / 167 assertions green (clojure -M:dev:test), clj-kondo 0 errors 0
+ warnings, demo runnable end-to-end offline (clojure -M:dev:run)."
+ :itonami.blueprint/adr "2607300300"}

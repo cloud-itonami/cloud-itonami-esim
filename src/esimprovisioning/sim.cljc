@@ -1,0 +1,93 @@
+(ns esimprovisioning.sim
+  "End-to-end demo: drive several operations through one compiled
+  OperationActor and print what the governor, the phase gate and the ledger did.
+
+  Runnable offline with no model and no network: `clojure -M:dev:run`.
+
+  What it demonstrates, in order:
+    1. an auto-commit (phase 3 allows :euicc/register when governor-clean)
+    2. a HARD refusal the governor recomputes itself (bad ICCID check digit)
+    3. a HARD refusal from the library's reachability table (enable a profile
+       while another is enabled -- would cut a working line)
+    4. an ESCALATION that a human approves (:profile/lifecycle disable)
+    5. an ESCALATION for an ownership transfer, and what the ledger records"
+  (:require [langgraph.graph :as g]
+            [esimprovisioning.operation :as operation]
+            [esimprovisioning.store :as store]))
+
+(def ^:private ctx {:actor-id "cloud-itonami-esim" :role :provisioning-operator})
+
+(defn- pad [s n]
+  (let [s (str s)]
+    (str s (apply str (repeat (max 0 (- n (count s))) " ")))))
+
+(defn- drive
+  "Invoke the actor once. Returns the final state (resuming through an approval
+  when `approval` is given)."
+  [app request & [approval]]
+  (let [thread (str (name (:op request)) "-" (hash request))
+        cfg    {:thread-id thread}
+        s1     (g/invoke app {:request request :context ctx} cfg)]
+    ;; :resume? true is what continues past interrupt-before; a plain input map
+    ;; would start a fresh run (langgraph.graph/run*).
+    (if (and approval (= :escalate (:disposition s1)))
+      (g/invoke app {:approval approval} (assoc cfg :resume? true))
+      s1)))
+
+(defn- report [label state]
+  (println (str (pad label 34)
+                " disposition=" (pad (:disposition state) 9)
+                " violations=" (pr-str (mapv :rule (get-in state [:verdict :violations]))))))
+
+(defn -main [& _]
+  (let [st  (store/mem-store)
+        app (operation/build st)
+        eid store/demo-eid]
+
+    (println "\n=== cloud-itonami-esim demo (offline, no model, no network) ===\n")
+
+    (report "1 register a new eUICC"
+            (drive app {:op :euicc/register
+                          :subject "89049032000000000000000000000002"
+                          :value {:eid "89049032000000000000000000000002"}}))
+
+    (report "2 download with a bad ICCID"
+            (drive app {:op :profile/download
+                          :subject eid
+                          :value {:eid eid
+                                  ;; last digit tampered -> Luhn fails
+                                  :iccid "8981012345678901231"}}))
+
+    (report "3 enable while another is enabled"
+            (drive app {:op :profile/lifecycle
+                          :subject eid
+                          :value {:eid eid
+                                  :iccid store/demo-iccid-b
+                                  :operation :enable}}))
+
+    (report "4 disable, human-approved"
+            (drive app {:op :profile/lifecycle
+                          :subject eid
+                          :value {:eid eid
+                                  :iccid store/demo-iccid-a
+                                  :operation :disable}}
+                  {:status :approved :by "operator@example"}))
+
+    (report "5 ownership transfer, approved"
+            (drive app {:op :ownership/transfer
+                          :subject eid
+                          :value {:iccid store/demo-iccid-a
+                                  :from-subject "did:key:zDemoSubjectA"
+                                  :to-subject "did:key:zDemoSubjectB"}}
+                  {:status :approved :by "operator@example"}))
+
+    (println "\n--- append-only ledger ---")
+    (doseq [f (store/ledger st)]
+      (println (str "  " (pad (:t f) 20) " " (pad (:op f) 20) " "
+                    (or (:approved-by f) (pr-str (:violations f)) ""))))
+
+    (println (str "\nenabled profile after run: "
+                  (pr-str (store/enabled-iccid st eid))))
+    (println (str "transfer recorded (executed? must be false): "
+                  (pr-str (:executed (store/transfer-of st store/demo-iccid-a)))))
+    (println)))

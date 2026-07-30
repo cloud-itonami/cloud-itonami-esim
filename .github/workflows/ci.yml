@@ -1,0 +1,73 @@
+name: CI
+
+# :local/root paths only resolve inside the monorepo checkout, so the test job
+# reconstructs the workspace layout by checking out siblings (all PUBLIC) into
+# the expected relative paths -- no token needed. Same pattern as the other
+# cloud-itonami actors.
+#
+# The dependency chain here is two levels deep: this actor -> kotoba-lang/esim
+# -> {phone, card} -> {html, css}. Omitting any of them fails at classpath
+# build, not at test.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "21" }
+      - uses: DeLaGuardo/setup-clojure@13.4
+        with: { cli: latest }
+      - name: clj-kondo (errors fail the build)
+        run: clojure -M:lint
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: orgs/cloud-itonami/cloud-itonami-esim }
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/langgraph
+          path: orgs/kotoba-lang/langgraph
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/langchain
+          path: orgs/kotoba-lang/langchain
+      # The records + reachability authority, and its own dependency chain.
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/esim
+          path: orgs/kotoba-lang/esim
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/card
+          path: orgs/kotoba-lang/card
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/phone
+          path: orgs/kotoba-lang/phone
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/html
+          path: orgs/kotoba-lang/html
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/css
+          path: orgs/kotoba-lang/css
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "21" }
+      - uses: DeLaGuardo/setup-clojure@13.4
+        with: { cli: latest }
+      - name: test
+        working-directory: orgs/cloud-itonami/cloud-itonami-esim
+        run: clojure -M:dev:test
+      - name: demo runner (compiled StateGraph, end-to-end)
+        working-directory: orgs/cloud-itonami/cloud-itonami-esim
+        run: clojure -M:dev:run
