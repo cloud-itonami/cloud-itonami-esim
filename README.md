@@ -129,10 +129,46 @@ actually fail.
 ## Run
 
 ```bash
-clojure -M:dev:test    # 31 tests / 167 assertions
+clojure -M:test        # 41 tests / 213 assertions (includes the HTTP surface)
 clojure -M:lint        # clj-kondo, 0 errors 0 warnings
-clojure -M:dev:run     # end-to-end demo: offline, no model, no network
+clojure -M:run         # end-to-end demo: offline, no model, no network
+clojure -M:serve       # the governed HTTP surface, on 127.0.0.1:1339
 ```
+
+No `:dev` needed: every dependency is a git coordinate, so a fork can build this
+outside the monorepo. `:dev` overrides to sibling checkouts for workspace work.
+
+## The HTTP surface
+
+`POST /commit` takes a proposal a consent surface has already obtained human
+consent for, runs it through this actor's own advisor → governor → phase gate, and
+answers with one of **three** states:
+
+| answer | meaning |
+|---|---|
+| `{"status":"committed","record":…}` | governor clear **and** phase-auto |
+| `{"status":"held","refusal":…}` | governor refused (HARD) |
+| `{"status":"pending","reference":…}` | accepted, awaiting **this actor's** operator |
+
+> **A Passkey consent is not an operator approval.** The graph's
+> `interrupt-before #{:request-approval}` is never resumed here and **no field in
+> the request body can cause it to be** — a test sends `:approval`,
+> `:disposition`, `:verdict` and `:status` both alongside and inside the proposal
+> and asserts every one still ends `pending`.
+
+Since `:profile/download`, `:profile/lifecycle` and `:ownership/transfer` are
+absent from **every** phase's `:auto` set, a well-formed proposal from a consent
+surface answers `pending` — never `committed`. That is the two gates working, not
+a limitation to route around.
+
+Each POST gets a **fresh graph thread**. Keying the thread on the proposal id
+would let langgraph continue the previous run's state for that id, carrying a
+caller-supplied `:approval` from one call into the next; a test caught exactly
+that. Two POSTs for one proposal are therefore two independent attempts.
+
+The surface binds **loopback only** and has no authentication of its own yet.
+The store is a per-process `MemStore`, so a restart forgets — the shared durable
+plane is ADR-2607300300 gap 2 and a separate change.
 
 The demo drives five operations through one compiled actor and prints the
 ledger — an auto-commit, two HARD refusals (bad check digit; enable that would
@@ -144,10 +180,11 @@ up `executed? false`.
 | | |
 |---|---|
 | Role | governed actor (Advisor ⊣ Governor ⊣ append-only ledger) |
-| Tests | 31 tests / 167 assertions, all green |
+| Tests | 41 tests / 213 assertions, all green (incl. HTTP on a real socket) |
 | Lint | clj-kondo 0 errors, 0 warnings |
 | Store backends | MemStore only — Datomic/kotoba-server is the next seam |
 | Jurisdiction spec-basis | none at R0, deliberately (see Coverage) |
+| HTTP surface | yes — `clojure -M:serve`, loopback, no auth of its own yet |
 | Real SM-DP+ / SM-DS connection | none — ports are host-injected, see `kotoba.esim.ports` |
 | Actuation | never; every op is `:effect :propose` |
 
