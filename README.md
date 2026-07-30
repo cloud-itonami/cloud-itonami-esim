@@ -129,7 +129,7 @@ actually fail.
 ## Run
 
 ```bash
-clojure -M:test        # 75 tests / 345 assertions (both HTTP surfaces + store + advisor containment)
+clojure -M:test        # 79 tests / 353 assertions (both HTTP surfaces + store + advisor + consent token)
 clojure -M:lint        # clj-kondo, 0 errors 0 warnings
 clojure -M:run         # end-to-end demo: offline, no model, no network
 clojure -M:serve       # consent on 127.0.0.1:1339, operator on :1340
@@ -170,7 +170,7 @@ that. Two POSTs for one proposal are therefore two independent attempts.
 
 | surface | default port | routes |
 |---|---|---|
-| consent | `1339` | `POST /commit`, `GET /proposals/<ref>`, `GET /healthz` |
+| consent | `1339` | `POST /commit`, `GET /proposals/<ref>` — `X-ESIM-CONSENT-TOKEN`; `GET /healthz` open |
 | operator | `1340` | `POST /proposals/<ref>/decide` |
 
 > **The separation is the boundary, not a convention.** A pending proposal awaits
@@ -207,7 +207,7 @@ up `executed? false`.
 | | |
 |---|---|
 | Role | governed actor (Advisor ⊣ Governor ⊣ append-only ledger) |
-| Tests | 75 tests / 345 assertions, all green (both HTTP surfaces on real sockets + the store contract + advisor containment) |
+| Tests | 79 tests / 353 assertions, all green (both HTTP surfaces on real sockets + store contract + advisor containment + consent token) |
 | Lint | clj-kondo 0 errors, 0 warnings |
 | Store backends | MemStore only — Datomic/kotoba-server is the next seam |
 | Jurisdiction spec-basis | none at R0, deliberately (see Coverage) |

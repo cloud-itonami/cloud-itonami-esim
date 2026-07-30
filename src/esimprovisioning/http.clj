@@ -232,6 +232,28 @@
                           {:thread-id reference :resume? true})]
       (assoc (disposition->wire state reference) :decided-by by))))
 
+(def consent-token-env
+  "The consent surface's shared secret with whichever app holds the Passkey ceremony.
+
+  Loopback binding was the only thing guarding /commit, and loopback is not an
+  authorisation: every process on the host shares it. Without this, anything running
+  locally could POST a proposal claiming a subject consented, and the only thing left
+  between that and a provisioned line -- or a transferred one -- would be this actor's
+  operator approving what they believed a human had agreed to.
+
+  The governor is unaffected: it recomputes every ground-truth fact from recorded state.
+  This gates WHO MAY CLAIM a subject consented, which is the one thing a governor cannot
+  recompute, because consent happened somewhere else."
+  "ESIM_CONSENT_TOKEN")
+
+(def consent-token-header "X-ESIM-CONSENT-TOKEN")
+
+(defn consent-token
+  "The configured consent token, or nil when unset. Read at call time."
+  []
+  (let [t (System/getenv consent-token-env)]
+    (when (and t (seq t)) t)))
+
 (defn handler
   "The HttpHandler for the CONSENT surface: commit and read, never decide."
   [store app]
@@ -239,12 +261,31 @@
     (handle [_ exchange]
       (try
         (let [method (.getRequestMethod ^HttpExchange exchange)
-              path (.getPath (.getRequestURI ^HttpExchange exchange))]
+              path (.getPath (.getRequestURI ^HttpExchange exchange))
+              expected (consent-token)
+              presented (.getFirst (.getRequestHeaders ^HttpExchange exchange)
+                                   consent-token-header)]
           (cond
+            ;; /healthz stays open: it carries no subject data, and a deployment must be
+            ;; able to ask whether this actor is up before it has a token to ask with.
             (and (= "GET" method) (= "/healthz" path))
             (send! exchange 200 {:status "ok"
                                  :actor (:actor-id actor-context)
                                  :euiccs (count (store/all-euiccs store))})
+
+            ;; Everything else needs the token, and an UNSET token refuses rather than
+            ;; waves through -- failing open would leave this surface most permissive
+            ;; exactly where nobody had configured it.
+            (nil? expected)
+            (send! exchange 503
+                   {:status "held"
+                    :refusal {:rule :consent-surface-unconfigured
+                              :detail (str consent-token-env
+                                           " が未設定のため proposal を受け付けません")}})
+
+            (not= expected presented)
+            (send! exchange 401
+                   {:status "held" :refusal {:rule :consent-token-mismatch}})
 
             ;; Read-only, so it is safe on the consent surface: a caller learns
             ;; what became of its own reference without being able to decide it.
