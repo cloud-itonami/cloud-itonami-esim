@@ -42,13 +42,31 @@
                 (catch Exception _ nil))}))
 
 (defn- with-server
-  "Run f with a server on an ephemeral-ish port, always stopping it."
+  "Run f with both surfaces on ephemeral ports, always stopping them.
+  f receives [consent-port store operator-port]."
   [f]
   (let [st (store/mem-store)
-        server (http/start! {:port 0 :store st})
-        port (.getPort (.getAddress server))]
-    (try (f port st)
-         (finally (.stop server 0)))))
+        running (http/start! {:port 0 :operator-port 0 :store st})
+        ;; HttpServer/getAddress already returns the InetSocketAddress; calling
+        ;; getAddress twice lands on an InetAddress, which has no getPort.
+        cport (.getPort (.getAddress ^com.sun.net.httpserver.HttpServer
+                                    (:consent running)))
+        oport (.getPort (.getAddress ^com.sun.net.httpserver.HttpServer
+                                     (:operator running)))]
+    (try (f cport st oport)
+         (finally (http/stop! running)))))
+
+(defn- post-with-header [port path body header value]
+  (let [b (-> (HttpRequest/newBuilder (URI/create (str "http://127.0.0.1:" port path)))
+              (.timeout (Duration/ofSeconds 10))
+              (.header "Content-Type" "application/json"))
+        b (cond-> b value (.header header value))
+        res (.send client (.build (.POST b (HttpRequest$BodyPublishers/ofString
+                                            (json/write-str body))))
+                   (HttpResponse$BodyHandlers/ofString))]
+    {:status (.statusCode res)
+     :body (try (json/read-str (.body res) :key-fn keyword)
+                (catch Exception _ nil))}))
 
 ;; A proposal in the shape cloud-itonami-app's transport sends: JSON, so the op
 ;; and the value's keyword fields arrive as strings.
@@ -61,7 +79,7 @@
 
 (deftest healthz-answers
   (with-server
-    (fn [port _]
+    (fn [port _ _oport]
       (let [{:keys [status body]} (get! port "/healthz")]
         (is (= 200 status))
         (is (= "ok" (:status body)))
@@ -72,7 +90,7 @@
   (testing "this is the two gates on the wire: the subject consented, and this
             actor still needs its OWN operator"
     (with-server
-      (fn [port _]
+      (fn [port _ _oport]
         (let [{:keys [status body]}
               (post port "/commit"
                     (proposal "profile/lifecycle"
@@ -86,7 +104,7 @@
 (deftest no-field-in-the-body-can-buy-an-operator-approval
   (testing "a caller cannot smuggle the approval the interrupt is waiting for"
     (with-server
-      (fn [port st]
+      (fn [port st _oport]
         (let [base (proposal "profile/lifecycle"
                              {:eid eid :iccid iccid-a :operation "disable"})]
           (testing "smuggled alongside the proposal"
@@ -113,7 +131,7 @@
 
 (deftest a-governor-refusal-comes-back-as-held
   (with-server
-    (fn [port st]
+    (fn [port st _oport]
       (testing "a tampered ICCID check digit"
         (let [{:keys [body]} (post port "/commit"
                                    (proposal "profile/download"
@@ -140,14 +158,14 @@
 
 (deftest an-unknown-op-is-refused-not-coerced
   (with-server
-    (fn [port _]
+    (fn [port _ _oport]
       (doseq [op ["profile/nuke" "" "not-a-keyword-at-all"]]
         (let [{:keys [body]} (post port "/commit" (proposal op {:eid eid}))]
           (is (= "held" (:status body)) (str "op " (pr-str op))))))))
 
 (deftest a-malformed-request-is-refused-with-a-reason
   (with-server
-    (fn [port _]
+    (fn [port _ _oport]
       (let [{:keys [status body]} (post port "/commit" {:not-a-proposal true})]
         (is (= 400 status))
         (is (= "held" (:status body)))
@@ -159,7 +177,7 @@
 
 (deftest every-answer-is-one-of-the-three-states
   (with-server
-    (fn [port _]
+    (fn [port _ _oport]
       (doseq [[op value] [["profile/lifecycle" {:eid eid :iccid iccid-a :operation "disable"}]
                           ["profile/download" {:eid eid :iccid iccid-bad}]
                           ["ownership/transfer" {:eid eid :iccid iccid-a
@@ -173,7 +191,7 @@
 (deftest an-ownership-transfer-is-never-auto-committed
   (testing "the primary SIM-swap path must always reach a human"
     (with-server
-      (fn [port st]
+      (fn [port st _oport]
         (let [{:keys [body]} (post port "/commit"
                                    (proposal "ownership/transfer"
                                              {:eid eid :iccid iccid-a
@@ -186,7 +204,7 @@
 
 (deftest the-ledger-records-what-the-surface-answered
   (with-server
-    (fn [port st]
+    (fn [port st _oport]
       (post port "/commit" (proposal "profile/download" {:eid eid :iccid iccid-bad}))
       (let [ledger (store/ledger st)]
         (is (some #(= :advised (:t %)) ledger)
@@ -207,3 +225,155 @@
   (testing "an unusable op becomes nil rather than something plausible"
     (is (nil? (:op (http/proposal->request {:op "" :value {}}))))
     (is (nil? (:op (http/proposal->request {:op nil :value {}}))))))
+
+;; ---------------------------------------------------------------------------
+;; resolving a pending proposal
+;; ---------------------------------------------------------------------------
+
+(def ^:private token "test-operator-token")
+
+(defn- pending-reference
+  "Push a proposal to pending and return its reference."
+  [port]
+  (let [{:keys [body]} (post port "/commit"
+                             (proposal "profile/lifecycle"
+                                       {:eid eid :iccid iccid-a :operation "disable"}))]
+    (assert (= "pending" (:status body)) (pr-str body))
+    (:reference body)))
+
+(deftest a-pending-reference-can-be-read-back
+  (with-server
+    (fn [port _ _oport]
+      (let [ref (pending-reference port)
+            {:keys [status body]} (get! port (str "/proposals/" ref))]
+        (is (= 200 status))
+        (is (= "pending" (:status body)))
+        (is (= ref (:reference body)))
+        (is (false? (:resolved? body)) "the operator has not decided yet")))))
+
+(deftest an-unknown-reference-answers-unknown-not-pending
+  (with-server
+    (fn [port _ _oport]
+      (let [{:keys [body]} (get! port "/proposals/never-existed")]
+        (is (= "unknown" (:status body))
+            "reporting an unknown reference as pending would be a guess dressed
+             as a fact -- and after a restart every old reference is unknown")))))
+
+(deftest the-consent-surface-cannot-decide
+  (testing "this is D3 as a port boundary: if the consent surface could decide, it
+            would hold both gates"
+    (with-server
+      (fn [port _ _oport]
+        (let [ref (pending-reference port)]
+          (doseq [path [(str "/proposals/" ref "/decide")
+                        (str "/operator/proposals/" ref "/decide")
+                        "/decide"]]
+            (let [{:keys [status body]} (post port path {:status "approved" :by "app"})]
+              (is (= 404 status) (str "consent surface must not route " path))
+              (is (= "held" (:status body)))))
+          (testing "and the proposal is still pending"
+            (is (= "pending" (:status (:body (get! port (str "/proposals/" ref))))))))))))
+
+(deftest the-operator-surface-fails-closed-without-a-token
+  (testing "an unauthenticated decide endpoint is a way to approve a real line cut"
+    (with-server
+      (fn [port _ oport]
+        (let [ref (pending-reference port)
+              {:keys [status body]} (post-with-header
+                                     oport (str "/proposals/" ref "/decide")
+                                     {:status "approved" :by "operator@example"}
+                                     "X-ESIM-OPERATOR-TOKEN" nil)]
+          ;; ESIM_OPERATOR_TOKEN is not set in the test JVM.
+          (is (= 503 status))
+          (is (= "operator-surface-unconfigured"
+                 (name (keyword (get-in body [:refusal :rule])))))
+          (testing "and the proposal did not move"
+            (is (= "pending" (:status (:body (get! port (str "/proposals/" ref))))))))))))
+
+(deftest a-wrong-token-is-refused
+  (testing "with a token configured, a mismatched one is 401 -- checked by
+            temporarily binding the env lookup"
+    (with-redefs [http/operator-token (constantly token)]
+      (with-server
+        (fn [port _ oport]
+          (let [ref (pending-reference port)]
+            (let [{:keys [status body]} (post-with-header
+                                         oport (str "/proposals/" ref "/decide")
+                                         {:status "approved" :by "op"}
+                                         "X-ESIM-OPERATOR-TOKEN" "wrong")]
+              (is (= 401 status))
+              (is (= "operator-token-mismatch"
+                     (name (keyword (get-in body [:refusal :rule]))))))
+            (is (= "pending" (:status (:body (get! port (str "/proposals/" ref))))))))))))
+
+(deftest an-operator-approval-resolves-the-proposal
+  (with-redefs [http/operator-token (constantly token)]
+    (with-server
+      (fn [port st oport]
+        (let [ref (pending-reference port)]
+          (testing "before the decision, the profile has not moved"
+            (is (= :enabled (:esim/state (store/profile-of st eid iccid-a)))))
+          (let [{:keys [status body]} (post-with-header
+                                       oport (str "/proposals/" ref "/decide")
+                                       {:status "approved" :by "operator@example"}
+                                       "X-ESIM-OPERATOR-TOKEN" token)]
+            (is (= 200 status))
+            (is (= "committed" (:status body)))
+            (is (= "operator@example" (:decided-by body))))
+          (testing "the profile really moved, and the consent surface can read it back"
+            (is (= :disabled (:esim/state (store/profile-of st eid iccid-a))))
+            (let [{:keys [body]} (get! port (str "/proposals/" ref))]
+              (is (= "committed" (:status body)))
+              (is (true? (:resolved? body)))))
+          (testing "and the ledger names the approver"
+            (let [c (first (filter #(= :committed (:t %)) (store/ledger st)))]
+              (is (= "operator@example" (:approved-by c))))))))))
+
+(deftest an-operator-rejection-holds-it
+  (with-redefs [http/operator-token (constantly token)]
+    (with-server
+      (fn [port st oport]
+        (let [ref (pending-reference port)
+              {:keys [body]} (post-with-header
+                              oport (str "/proposals/" ref "/decide")
+                              {:status "rejected" :by "operator@example"}
+                              "X-ESIM-OPERATOR-TOKEN" token)]
+          (is (= "held" (:status body)))
+          (is (= :enabled (:esim/state (store/profile-of st eid iccid-a)))
+              "a rejection must not move anything")
+          (let [r (first (filter #(= :approval-rejected (:t %)) (store/ledger st)))]
+            (is (some? r))
+            (is (= "operator@example" (:by r)))))))))
+
+(deftest an-approval-nobody-is-named-for-is-refused
+  (with-redefs [http/operator-token (constantly token)]
+    (with-server
+      (fn [port st oport]
+        (let [ref (pending-reference port)]
+          (doseq [body [{:status "approved"}
+                        {:status "approved" :by ""}
+                        {:status "approved" :by nil}]]
+            (let [{:keys [body]} (post-with-header
+                                  oport (str "/proposals/" ref "/decide")
+                                  body "X-ESIM-OPERATOR-TOKEN" token)]
+              (is (= "approver-unnamed"
+                     (name (keyword (get-in body [:refusal :rule]))))
+                  "an approval nobody is named for cannot be audited")))
+          (testing "and a malformed status is refused too"
+            (let [{:keys [body]} (post-with-header
+                                  oport (str "/proposals/" ref "/decide")
+                                  {:status "maybe" :by "op"}
+                                  "X-ESIM-OPERATOR-TOKEN" token)]
+              (is (= "malformed-decision"
+                     (name (keyword (get-in body [:refusal :rule])))))))
+          (is (= :enabled (:esim/state (store/profile-of st eid iccid-a)))))))))
+
+(deftest deciding-an-unknown-reference-answers-unknown
+  (with-redefs [http/operator-token (constantly token)]
+    (with-server
+      (fn [_port _ oport]
+        (let [{:keys [body]} (post-with-header
+                              oport "/proposals/never-existed/decide"
+                              {:status "approved" :by "op"}
+                              "X-ESIM-OPERATOR-TOKEN" token)]
+          (is (= "unknown" (:status body))))))))

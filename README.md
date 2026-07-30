@@ -129,16 +129,16 @@ actually fail.
 ## Run
 
 ```bash
-clojure -M:test        # 41 tests / 213 assertions (includes the HTTP surface)
+clojure -M:test        # 50 tests / 249 assertions (includes both HTTP surfaces)
 clojure -M:lint        # clj-kondo, 0 errors 0 warnings
 clojure -M:run         # end-to-end demo: offline, no model, no network
-clojure -M:serve       # the governed HTTP surface, on 127.0.0.1:1339
+clojure -M:serve       # consent on 127.0.0.1:1339, operator on :1340
 ```
 
 No `:dev` needed: every dependency is a git coordinate, so a fork can build this
 outside the monorepo. `:dev` overrides to sibling checkouts for workspace work.
 
-## The HTTP surface
+## The HTTP surfaces — two listeners, on purpose
 
 `POST /commit` takes a proposal a consent surface has already obtained human
 consent for, runs it through this actor's own advisor → governor → phase gate, and
@@ -166,9 +166,36 @@ would let langgraph continue the previous run's state for that id, carrying a
 caller-supplied `:approval` from one call into the next; a test caught exactly
 that. Two POSTs for one proposal are therefore two independent attempts.
 
-The surface binds **loopback only** and has no authentication of its own yet.
+### Resolving a pending proposal
+
+| surface | default port | routes |
+|---|---|---|
+| consent | `1339` | `POST /commit`, `GET /proposals/<ref>`, `GET /healthz` |
+| operator | `1340` | `POST /proposals/<ref>/decide` |
+
+> **The separation is the boundary, not a convention.** A pending proposal awaits
+> *this actor's* operator. If `decide` sat on the consent surface, the consent
+> surface could approve its own proposals and would hold both gates. They are
+> different listeners, so the consent surface cannot reach `decide` — a test
+> asserts 404 on three plausible path shapes and that the proposal stays pending.
+
+The operator surface requires `X-ESIM-OPERATOR-TOKEN` matching
+`$ESIM_OPERATOR_TOKEN`, and **refuses every decide when that is unset** (503).
+Failing closed matters more than convenience here: an unauthenticated decide is a
+way to approve a real line cut or a real number transfer, and the opposite choice
+would make the surface most dangerous exactly when nobody had configured it.
+
+`by` is required on a decision and is recorded on the ledger. An approval nobody
+is named for cannot be audited, which is most of the reason the gate exists.
+
+`GET /proposals/<ref>` answers `unknown` for a reference this process never saw —
+including every reference from before a restart, since the checkpointer is in
+memory. Reporting an unknown reference as still `pending` would be a guess dressed
+as a fact.
+
+Both surfaces bind **loopback only** and have no transport security of their own.
 The store is a per-process `MemStore`, so a restart forgets — the shared durable
-plane is ADR-2607300300 gap 2 and a separate change.
+plane is ADR-2607300300 gap 4 and a separate change.
 
 The demo drives five operations through one compiled actor and prints the
 ledger — an auto-commit, two HARD refusals (bad check digit; enable that would
@@ -180,11 +207,11 @@ up `executed? false`.
 | | |
 |---|---|
 | Role | governed actor (Advisor ⊣ Governor ⊣ append-only ledger) |
-| Tests | 41 tests / 213 assertions, all green (incl. HTTP on a real socket) |
+| Tests | 50 tests / 249 assertions, all green (incl. both HTTP surfaces on real sockets) |
 | Lint | clj-kondo 0 errors, 0 warnings |
 | Store backends | MemStore only — Datomic/kotoba-server is the next seam |
 | Jurisdiction spec-basis | none at R0, deliberately (see Coverage) |
-| HTTP surface | yes — `clojure -M:serve`, loopback, no auth of its own yet |
+| HTTP surfaces | consent + operator, `clojure -M:serve`, loopback; operator needs `$ESIM_OPERATOR_TOKEN` |
 | Real SM-DP+ / SM-DS connection | none — ports are host-injected, see `kotoba.esim.ports` |
 | Actuation | never; every op is `:effect :propose` |
 
