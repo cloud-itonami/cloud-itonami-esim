@@ -29,10 +29,31 @@
   always a human call. `committed` exists on this surface for ops that a future
   phase legitimately auto-commits, and for an operator-facing caller.
 
+  TWO SURFACES, ON TWO LISTENERS, AND THAT SEPARATION IS THE POINT.
+
+    consent surface (default :1339)   POST /commit
+                                      GET  /proposals/<reference>
+                                      GET  /healthz
+    operator surface (default :1340)  POST /proposals/<reference>/decide
+
+  A pending proposal is waiting for THIS actor's operator. If the decide endpoint
+  sat on the consent surface, the consent surface could approve its own
+  proposals -- the app would hold both gates, and D3 would be a comment rather
+  than a boundary. So they are different listeners: the consent surface cannot
+  reach decide because it is not listening on that port, which is a structural
+  separation rather than a policy check that someone can forget.
+
+  The operator surface additionally requires a shared secret from
+  ESIM_OPERATOR_TOKEN, and REFUSES EVERY DECIDE WHEN THAT IS UNSET. Failing closed
+  matters more here than convenience: an unauthenticated decide endpoint is a way
+  to approve a real line cut or a real number transfer.
+
   The store is a per-process MemStore, so a restart forgets. That is R0: the
-  shared durable plane (ADR-2607300300 D4, gap 2) is a separate change, and
-  pretending otherwise by persisting to a local file would give the appearance of
-  durability without the cross-domain reach that matters."
+  shared durable plane (ADR-2607300300 D4) is a separate change, and pretending
+  otherwise by persisting to a local file would give the appearance of durability
+  without the cross-domain reach that matters. It also means a pending reference
+  does not survive a restart -- a caller polling one will get \"unknown\", which is
+  honest about what was lost rather than silently reporting it as still pending."
   (:require [clojure.data.json :as json]
             [langgraph.graph :as g]
             [esimprovisioning.operation :as operation]
@@ -114,6 +135,30 @@
      :subject (:eid value)
      :value value}))
 
+(defn- disposition->wire
+  "Map a graph state's disposition onto the wire vocabulary. One function so the
+  commit path and the status path cannot drift into describing the same
+  disposition differently."
+  [state thread]
+  (let [verdict (:verdict state)]
+    (case (:disposition state)
+      :commit
+      {:status "committed"
+       :record (merge {:reference thread} (:payload (:record state)))}
+
+      :escalate
+      {:status "pending"
+       :reference thread
+       :reason (str (or (some-> (last (:audit state)) :reason) :actuation))
+       :detail (str "この操作は " (:actor-id actor-context)
+                    " 自身の operator 承認を必要とします（consent surface の "
+                    "Passkey 同意は operator 承認ではありません）")}
+
+      {:status "held"
+       :refusal {:rule (or (some-> (:violations verdict) first :rule) :held)
+                 :violations (mapv :rule (:violations verdict))
+                 :confidence (:confidence verdict)}})))
+
 (defn commit-outcome
   "Run one proposal through the actor and return the wire answer.
 
@@ -142,33 +187,53 @@
   (let [request (proposal->request proposal)
         thread (str "commit-" (or (:id proposal) "anon") "-" (random-uuid))
         state (g/invoke app {:request request :context actor-context}
-                        {:thread-id thread})
-        verdict (:verdict state)]
-    (case (:disposition state)
-      :commit
-      {:status "committed"
-       :record (merge {:op (str (:op request))}
-                      (:payload (:record state)))}
+                        {:thread-id thread})]
+    (disposition->wire state thread)))
 
-      :escalate
-      {:status "pending"
-       :reference thread
-       :reason (str (or (some-> (last (:audit state)) :reason) :actuation))
-       :detail (str "この操作は " (:actor-id actor-context)
-                    " 自身の operator 承認を必要とします（consent surface の "
-                    "Passkey 同意は operator 承認ではありません）")}
+(defn proposal-status
+  "What became of one reference.
 
-      ;; :hold, or anything unexpected -- refuse rather than guess.
-      {:status "held"
-       :refusal {:rule (or (some-> (:violations verdict) first :rule) :held)
-                 :violations (mapv :rule (:violations verdict))
-                 :confidence (:confidence verdict)}})
-    ;; Note: the ledger write already happened inside the graph's :commit / :hold
-    ;; node. This function reports; it does not record.
-    ))
+  Answers \"unknown\" for a reference this process has never seen -- including one
+  from before a restart, because the checkpointer is in memory. Reporting an
+  unknown reference as still pending would be a guess dressed as a fact."
+  [app reference]
+  (if-let [checkpoint (g/get-state app reference)]
+    (assoc (disposition->wire (:state checkpoint) reference)
+           :resolved? (not= :interrupted (:status checkpoint)))
+    {:status "unknown"
+     :reference reference
+     :detail "この reference は本プロセスに記録がありません（再起動で失われた可能性）"}))
+
+(defn operator-decide!
+  "Resume a pending proposal with the OPERATOR's decision.
+
+  This is the only path that resumes the graph's approval interrupt, and it is
+  reachable only from the operator listener. `by` is required and recorded: an
+  approval nobody is named for cannot be audited, which is most of the reason the
+  gate exists."
+  [app reference {:keys [status by]}]
+  (cond
+    (not (contains? #{"approved" "rejected"} status))
+    {:status "held"
+     :refusal {:rule :malformed-decision
+               :detail "status は approved か rejected でなければなりません"}}
+
+    (or (nil? by) (and (string? by) (empty? by)))
+    {:status "held"
+     :refusal {:rule :approver-unnamed
+               :detail "by（承認者）は必須です — 名前のない承認は監査できません"}}
+
+    (nil? (g/get-state app reference))
+    {:status "unknown" :reference reference
+     :detail "この reference は本プロセスに記録がありません"}
+
+    :else
+    (let [state (g/invoke app {:approval {:status (keyword status) :by by}}
+                          {:thread-id reference :resume? true})]
+      (assoc (disposition->wire state reference) :decided-by by))))
 
 (defn handler
-  "The HttpHandler over one store + compiled actor."
+  "The HttpHandler for the CONSENT surface: commit and read, never decide."
   [store app]
   (reify HttpHandler
     (handle [_ exchange]
@@ -180,6 +245,12 @@
             (send! exchange 200 {:status "ok"
                                  :actor (:actor-id actor-context)
                                  :euiccs (count (store/all-euiccs store))})
+
+            ;; Read-only, so it is safe on the consent surface: a caller learns
+            ;; what became of its own reference without being able to decide it.
+            (and (= "GET" method) (re-matches #"/proposals/[^/]+" path))
+            (send! exchange 200
+                   (proposal-status app (subs path (count "/proposals/"))))
 
             (and (= "POST" method) (= "/commit" path))
             (let [body (json/read-str (read-body exchange) :key-fn keyword)
@@ -200,30 +271,111 @@
                                :refusal {:rule :actor-error
                                          :detail (str (.getMessage e))}}))))))
 
+(def operator-token-env "ESIM_OPERATOR_TOKEN")
+
+(defn- operator-token []
+  (let [t (System/getenv operator-token-env)]
+    (when (and t (seq t)) t)))
+
+(defn operator-handler
+  "The HttpHandler for the OPERATOR surface: decide, and nothing else.
+
+  Refuses every request when ESIM_OPERATOR_TOKEN is unset. An unauthenticated
+  decide endpoint is a way to approve a real line cut or a real number transfer,
+  so the absent-configuration case fails closed rather than open -- the opposite
+  choice would make the surface most dangerous exactly when nobody had configured
+  it."
+  [app]
+  (reify HttpHandler
+    (handle [_ exchange]
+      (try
+        (let [method (.getRequestMethod ^HttpExchange exchange)
+              path (.getPath (.getRequestURI ^HttpExchange exchange))
+              expected (operator-token)
+              presented (.getFirst (.getRequestHeaders ^HttpExchange exchange)
+                                   "X-ESIM-OPERATOR-TOKEN")]
+          (cond
+            (nil? expected)
+            (send! exchange 503
+                   {:status "held"
+                    :refusal {:rule :operator-surface-unconfigured
+                              :detail (str operator-token-env
+                                           " が未設定のため decide を受け付けません")}})
+
+            (not= expected presented)
+            (send! exchange 401
+                   {:status "held"
+                    :refusal {:rule :operator-token-mismatch}})
+
+            (and (= "POST" method)
+                 (re-matches #"/proposals/[^/]+/decide" path))
+            (let [reference (second (re-matches #"/proposals/([^/]+)/decide" path))
+                  body (json/read-str (read-body exchange) :key-fn keyword)]
+              (send! exchange 200 (operator-decide! app reference body)))
+
+            :else
+            (send! exchange 404 {:status "held"
+                                 :refusal {:rule :not-found :detail path}})))
+        (catch Exception e
+          (send! exchange 500 {:status "held"
+                               :refusal {:rule :actor-error
+                                         :detail (str (.getMessage e))}}))))))
+
+(defn- listener [port ^HttpHandler h]
+  (let [server (HttpServer/create (InetSocketAddress. "127.0.0.1" (int port)) 0)]
+    ;; Loopback only, deliberately: neither surface has transport security of its
+    ;; own. Binding either to a public interface before that exists would make the
+    ;; consent boundary decorative.
+    (.createContext server "/" h)
+    (.setExecutor server nil)
+    (.start server)
+    server))
+
 (defn start!
-  "Start the surface. Returns the HttpServer so a caller (or a test) can stop it."
+  "Start both surfaces. Returns {:consent server :operator server :store st :app app}
+  so a caller (or a test) can stop them.
+
+  The two listeners share one compiled graph -- and therefore one checkpointer --
+  which is what lets the operator resume a thread the consent surface created.
+  They do NOT share a port, which is what stops the consent surface resuming it
+  itself."
   ([] (start! {}))
-  ([{:keys [port store] :or {port 1339}}]
+  ([{:keys [port operator-port store]
+     :or {port 1339 operator-port 1340}}]
    (let [st (or store (store/mem-store))
-         app (operation/build st)
-         server (HttpServer/create (InetSocketAddress. "127.0.0.1" (int port)) 0)]
-     ;; Loopback only, deliberately: this surface accepts consented proposals and
-     ;; has no authentication of its own yet. Binding it to a public interface
-     ;; before that exists would make the consent boundary decorative.
-     (.createContext server "/" (handler st app))
-     (.setExecutor server nil)
-     (.start server)
-     server)))
+         app (operation/build st)]
+     {:store st
+      :app app
+      :consent (listener port (handler st app))
+      :operator (listener operator-port (operator-handler app))})))
+
+(defn stop!
+  "Stop both listeners."
+  [{:keys [consent operator]}]
+  (when consent (.stop ^HttpServer consent 0))
+  (when operator (.stop ^HttpServer operator 0)))
 
 (defn -main [& args]
   (let [port (if-let [p (first args)] (parse-long p) 1339)
-        server (start! {:port port})]
-    (println (str "cloud-itonami-esim listening on http://127.0.0.1:" port))
-    (println "  POST /commit   -- a consented proposal; answers committed | held | pending")
-    (println "  GET  /healthz")
+        operator-port (if-let [p (second args)] (parse-long p) (inc port))
+        running (start! {:port port :operator-port operator-port})]
+    (println "cloud-itonami-esim")
+    (println (str "  consent  http://127.0.0.1:" port))
+    (println "    POST /commit                 -- a consented proposal")
+    (println "    GET  /proposals/<reference>  -- what became of one")
+    (println "    GET  /healthz")
+    (println (str "  operator http://127.0.0.1:" operator-port))
+    (println "    POST /proposals/<reference>/decide")
+    (println (str "         requires header X-ESIM-OPERATOR-TOKEN = $"
+                  operator-token-env))
     (println)
-    (println "Every op a consent surface can send is absent from every phase's :auto")
-    (println "set, so a well-formed proposal answers \"pending\": it awaits THIS")
-    (println "actor's operator. That is the two gates, not a limitation.")
+    (if (System/getenv operator-token-env)
+      (println "operator surface: token configured")
+      (println (str "operator surface: " operator-token-env
+                    " is UNSET, so every decide is refused (fail closed)")))
+    (println)
+    (println "The two surfaces are two listeners on purpose. A pending proposal")
+    (println "awaits THIS actor's operator; if decide sat on the consent surface,")
+    (println "the consent surface could approve its own proposals.")
     (.join (Thread/currentThread))
-    server))
+    running))
