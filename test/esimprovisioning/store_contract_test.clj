@@ -16,10 +16,27 @@
 
   Every expectation below was measured from the store before it was written down.
   Modelled on cloud-itonami-card-issuing's own store_contract_test."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :as test :refer [deftest is testing]]
             [esimprovisioning.store :as store]))
 
-(defn- fresh [] (store/mem-store))
+(def ^:dynamic *make-store*
+  "The constructor under test.
+
+  This suite claimed -- in its own docstring and in every sibling actor's -- that a
+  future Datomic or kotoba-server backend could be dropped in behind the same contract
+  \"by re-running these tests against the new backend constructor\". It hardcoded
+  `store/mem-store`, so that was not true of it: you could not re-run it against
+  anything without editing it.
+
+  Now it is a var. `verify-contract!` below runs every assertion against whatever it is
+  given, and the deftest at the bottom runs it against MemStore. When a shared backend
+  arrives -- which is what ADR-2607300300's D4 needs, since a single kotobase ref is
+  what makes cross-domain invariants expressible and the actors are the half that does
+  not have one -- adding it is one more deftest, and any behaviour the protocol failed
+  to pin shows up as a failure rather than as a surprise in production."
+  store/mem-store)
+
+(defn- fresh [] (*make-store*))
 
 ;; ---------------------------------------------------------------------------
 ;; the transfer promise
@@ -195,3 +212,48 @@
           "exactly one enabled profile, which is the eUICC invariant everything else
            is checked against")
       (is (= 1 (count (store/all-euiccs db)))))))
+
+;; ---------------------------------------------------------------------------
+;; running this contract against another implementation
+;; ---------------------------------------------------------------------------
+
+(defn verify-contract!
+  "Run every assertion in this namespace against `make-store`.
+
+  This is the thing the docstring promised and did not provide. A second backend --
+  Datomic, kotoba-server, whatever eventually gives the actors the shared ref that
+  ADR-2607300300's D4 asks for -- is added as:
+
+      (deftest datomic-store-satisfies-the-same-contract
+        (verify-contract! #(datomic-store/store connection)))
+
+  and every behaviour this file pins is checked against it, without a line of this file
+  changing. Anything the Store protocol failed to pin surfaces as a failure here rather
+  than as a difference discovered in production.
+
+  Skips itself and the MemStore entry point, or it would recurse."
+  [make-store]
+  (binding [*make-store* make-store]
+    (doseq [[sym v] (ns-publics 'esimprovisioning.store-contract-test)
+            :when (and (:test (meta v))
+                       (not (contains? #{'mem-store-satisfies-the-contract
+                                         'the-contract-runner-actually-runs-something}
+                                       sym)))]
+      (test/test-var v))))
+
+(deftest mem-store-satisfies-the-contract
+  (testing "the same entry point a second backend will use, exercised today against the
+            only implementation there is -- so the mechanism is not first tried on the
+            day it matters"
+    (verify-contract! store/mem-store)))
+
+(deftest the-contract-runner-actually-runs-something
+  (testing "a runner that silently selected no tests would pass forever and check
+            nothing, which is the failure mode of every 'run them all' helper"
+    (let [n (count (for [[sym v] (ns-publics 'esimprovisioning.store-contract-test)
+                         :when (and (:test (meta v))
+                                    (not (contains? #{'mem-store-satisfies-the-contract
+                                                      'the-contract-runner-actually-runs-something}
+                                                    sym)))]
+                     sym))]
+      (is (<= 10 n) (str "expected the contract to be more than a handful of tests, got " n)))))
