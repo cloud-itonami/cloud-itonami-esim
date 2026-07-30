@@ -21,10 +21,16 @@
 (defonce ^HttpClient client
   (-> (HttpClient/newBuilder) (.connectTimeout (Duration/ofSeconds 5)) (.build)))
 
-(defn- post [port path body]
+(def consent "test-esim-consent-token")
+
+(defn- post
+  "POST with the consent token attached -- the consent surface requires it. The
+  refusal paths are exercised through post-with-header, which attaches nothing."
+  [port path body]
   (let [req (-> (HttpRequest/newBuilder (URI/create (str "http://127.0.0.1:" port path)))
                 (.timeout (Duration/ofSeconds 10))
                 (.header "Content-Type" "application/json")
+                (.header "X-ESIM-CONSENT-TOKEN" consent)
                 (.POST (HttpRequest$BodyPublishers/ofString (json/write-str body)))
                 (.build))
         res (.send client req (HttpResponse$BodyHandlers/ofString))]
@@ -35,6 +41,7 @@
 (defn- get! [port path]
   (let [req (-> (HttpRequest/newBuilder (URI/create (str "http://127.0.0.1:" port path)))
                 (.timeout (Duration/ofSeconds 10))
+                (.header "X-ESIM-CONSENT-TOKEN" consent)
                 (.GET) (.build))
         res (.send client req (HttpResponse$BodyHandlers/ofString))]
     {:status (.statusCode res)
@@ -45,7 +52,8 @@
   "Run f with both surfaces on ephemeral ports, always stopping them.
   f receives [consent-port store operator-port]."
   [f]
-  (let [st (store/mem-store)
+  (with-redefs [http/consent-token (constantly consent)]
+   (let [st (store/mem-store)
         running (http/start! {:port 0 :operator-port 0 :store st})
         ;; HttpServer/getAddress already returns the InetSocketAddress; calling
         ;; getAddress twice lands on an InetAddress, which has no getPort.
@@ -54,7 +62,7 @@
         oport (.getPort (.getAddress ^com.sun.net.httpserver.HttpServer
                                      (:operator running)))]
     (try (f cport st oport)
-         (finally (http/stop! running)))))
+         (finally (http/stop! running))))))
 
 (defn- post-with-header [port path body header value]
   (let [b (-> (HttpRequest/newBuilder (URI/create (str "http://127.0.0.1:" port path)))
@@ -377,3 +385,63 @@
                               {:status "approved" :by "op"}
                               "X-ESIM-OPERATOR-TOKEN" token)]
           (is (= "unknown" (:status body))))))))
+
+;; ---------------------------------------------------------------------------
+;; the consent surface's own token
+;; ---------------------------------------------------------------------------
+
+(deftest a-proposal-without-the-consent-token-is-refused
+  (testing "loopback is not an authorisation: without this, any local process could
+            claim a subject consented, and the only thing left between that and a
+            provisioned -- or transferred -- line would be this actor's operator"
+    (with-server
+      (fn [port _ _]
+        (let [{:keys [status body]} (post-with-header
+                                     port "/commit"
+                                     {:proposal {:id "p-1" :op "profile/download"}}
+                                     "X-Unrelated" "x")]
+          (is (= 401 status))
+          (is (= "consent-token-mismatch"
+                 (name (keyword (get-in body [:refusal :rule]))))))))))
+
+(deftest a-wrong-consent-token-is-refused
+  (with-server
+    (fn [port _ _]
+      (let [{:keys [status body]} (post-with-header
+                                   port "/commit"
+                                   {:proposal {:id "p-1" :op "profile/download"}}
+                                   "X-ESIM-CONSENT-TOKEN" "wrong")]
+        (is (= 401 status))
+        (is (= "consent-token-mismatch"
+               (name (keyword (get-in body [:refusal :rule])))))))))
+
+(deftest an-unset-consent-token-refuses-rather-than-waving-through
+  (with-redefs [http/consent-token (constantly nil)]
+    (let [running (http/start! {:port 0 :operator-port 0 :store (store/mem-store)})
+          port (.getPort (.getAddress ^com.sun.net.httpserver.HttpServer
+                                      (:consent running)))]
+      (try
+        (let [{:keys [status body]} (post-with-header
+                                     port "/commit"
+                                     {:proposal {:id "p-1" :op "profile/download"}}
+                                     "X-ESIM-CONSENT-TOKEN" "anything")]
+          (is (= 503 status))
+          (is (= "consent-surface-unconfigured"
+                 (name (keyword (get-in body [:refusal :rule]))))))
+        (finally (http/stop! running))))))
+
+(deftest healthz-stays-open-and-the-reads-do-not
+  (with-server
+    (fn [port _ _]
+      (testing "healthz carries no subject data and must answer before a token exists"
+        (let [req (-> (HttpRequest/newBuilder
+                       (URI/create (str "http://127.0.0.1:" port "/healthz")))
+                      (.timeout (Duration/ofSeconds 10)) (.GET) (.build))
+              res (.send client req (HttpResponse$BodyHandlers/ofString))]
+          (is (= 200 (.statusCode res)))))
+      (testing "a proposal read names a subject's reference, so it does need the token"
+        (let [req (-> (HttpRequest/newBuilder
+                       (URI/create (str "http://127.0.0.1:" port "/proposals/p-1")))
+                      (.timeout (Duration/ofSeconds 10)) (.GET) (.build))
+              res (.send client req (HttpResponse$BodyHandlers/ofString))]
+          (is (= 401 (.statusCode res))))))))
