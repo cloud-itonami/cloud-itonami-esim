@@ -18,7 +18,7 @@
 
   Every expectation was measured before being written down."
   (:require [clojure.set :as set]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [clojure.test :refer [deftest is testing]]
             [esimprovisioning.advisor :as advisor]
             [esimprovisioning.registry :as registry]
