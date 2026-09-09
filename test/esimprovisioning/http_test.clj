@@ -4,7 +4,7 @@
   The property this file exists for: a Passkey consent arriving from a consent
   surface is NOT this actor's operator approval, and nothing in the request body
   can make it one."
-  (:require [clojure.data.json :as json]
+  (:require [json.data-json :as json]
             [clojure.test :refer [deftest is testing]]
             [esimprovisioning.http :as http]
             [esimprovisioning.store :as store])

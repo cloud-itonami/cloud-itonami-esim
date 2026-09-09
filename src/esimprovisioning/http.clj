@@ -54,7 +54,7 @@
   without the cross-domain reach that matters. It also means a pending reference
   does not survive a restart -- a caller polling one will get \"unknown\", which is
   honest about what was lost rather than silently reporting it as still pending."
-  (:require [clojure.data.json :as json]
+  (:require [json.data-json :as json]
             [langgraph.graph :as g]
             [esimprovisioning.operation :as operation]
             [esimprovisioning.store :as store])
