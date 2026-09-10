@@ -85,7 +85,7 @@ The last two are **SOFT** (a human looks, and may approve): low confidence, and
 `:profile/download`, `:profile/lifecycle` and `:ownership/transfer` are **absent
 from every phase's `:auto` set, including phase 3**. This is a permanent
 structural fact about
-[`esimprovisioning.phase`](src/esimprovisioning/phase.cljc), not a rollout
+[`esimprovisioning.phase`](src/esimprovisioning/phase.kotoba), not a rollout
 milestone still to come:
 
 - a download or lifecycle transition changes whether a real person's line works;
