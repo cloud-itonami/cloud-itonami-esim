@@ -18,7 +18,7 @@
  (:intake -> :advise -> :govern -> :decide -+-> :commit / :request-approval ->
  :commit / :hold) with `interrupt-before #{:request-approval}` + in-memory
  checkpointer for real human-in-the-loop resume, proven end-to-end by
- test/esimprovisioning/operation_test.clj and the demo runner.
+ test/esimprovisioning/operation_test.kotoba and the demo runner.
 
  Six ops, all :effect :propose only: :coverage/report, :euicc/register,
  :profile/download, :profile/lifecycle, :smds/register, :ownership/transfer.
