@@ -22,7 +22,7 @@ jobs:
       - uses: DeLaGuardo/setup-clojure@13.4
         with: { cli: latest }
       - name: clj-kondo (errors fail the build)
-        run: clojure -M:lint
+        run: kbb -M:lint
 
   test:
     runs-on: ubuntu-latest
@@ -33,6 +33,6 @@ jobs:
       - uses: DeLaGuardo/setup-clojure@13.4
         with: { cli: latest }
       - name: test (includes the HTTP surface on a real socket)
-        run: clojure -M:test
+        run: kbb -M:test
       - name: demo runner (compiled StateGraph, end-to-end)
-        run: clojure -M:run
+        run: kbb -M:run

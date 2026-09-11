@@ -2,7 +2,7 @@
   "End-to-end demo: drive several operations through one compiled
   OperationActor and print what the governor, the phase gate and the ledger did.
 
-  Runnable offline with no model and no network: `clojure -M:dev:run`.
+  Runnable offline with no model and no network: `kbb -M:dev:run`.
 
   What it demonstrates, in order:
     1. an auto-commit (phase 3 allows :euicc/register when governor-clean)

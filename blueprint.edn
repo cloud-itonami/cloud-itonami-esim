@@ -44,6 +44,6 @@
  has not independently verified -- the exact failure cloud-itonami-isic-6120's
  ADR-0002 records. Coverage is reported as zero rather than invented.
 
- 31 tests / 167 assertions green (clojure -M:dev:test), clj-kondo 0 errors 0
- warnings, demo runnable end-to-end offline (clojure -M:dev:run)."
+ 31 tests / 167 assertions green (kbb -M:dev:test), clj-kondo 0 errors 0
+ warnings, demo runnable end-to-end offline (kbb -M:dev:run)."
  :itonami.blueprint/adr "2607300300"}
