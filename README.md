@@ -129,10 +129,10 @@ actually fail.
 ## Run
 
 ```bash
-clojure -M:test        # 93 tests / 383 assertions (both HTTP surfaces + store + advisor + consent token)
-clojure -M:lint        # clj-kondo, 0 errors 0 warnings
-clojure -M:run         # end-to-end demo: offline, no model, no network
-clojure -M:serve       # consent on 127.0.0.1:1339, operator on :1340
+kbb -M:test        # 93 tests / 383 assertions (both HTTP surfaces + store + advisor + consent token)
+kbb -M:lint        # clj-kondo, 0 errors 0 warnings
+kbb -M:run         # end-to-end demo: offline, no model, no network
+kbb -M:serve       # consent on 127.0.0.1:1339, operator on :1340
 ```
 
 No `:dev` needed: every dependency is a git coordinate, so a fork can build this
@@ -211,7 +211,7 @@ up `executed? false`.
 | Lint | clj-kondo 0 errors, 0 warnings |
 | Store backends | MemStore only — Datomic/kotoba-server is the next seam |
 | Jurisdiction spec-basis | none at R0, deliberately (see Coverage) |
-| HTTP surfaces | consent + operator, `clojure -M:serve`, loopback; operator needs `$ESIM_OPERATOR_TOKEN` |
+| HTTP surfaces | consent + operator, `kbb -M:serve`, loopback; operator needs `$ESIM_OPERATOR_TOKEN` |
 | Real SM-DP+ / SM-DS connection | none — ports are host-injected, see `kotoba.esim.ports` |
 | Actuation | never; every op is `:effect :propose` |
 

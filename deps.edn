@@ -42,9 +42,9 @@
         {io.github.com-junkawasaki/langgraph-clj {:local/root "../../kotoba-lang/langgraph"}
          io.github.kotoba-lang/langchain {:local/root "../../kotoba-lang/langchain"}
          io.github.kotoba-lang/esim {:local/root "../../kotoba-lang/esim"}}}
-  ;; clojure -M:dev:run  -> drive the demo through one OperationActor
+  ;; kbb -M:dev:run  -> drive the demo through one OperationActor
   :run {:main-opts ["-m" "esimprovisioning.sim"]}
-  ;; clojure -M:serve    -> the governed HTTP surface a consent surface hands to
+  ;; kbb -M:serve    -> the governed HTTP surface a consent surface hands to
   :serve {:main-opts ["-m" "esimprovisioning.http"]}
   :test {:extra-paths ["test"]
          :extra-deps {io.github.cognitect-labs/test-runner
