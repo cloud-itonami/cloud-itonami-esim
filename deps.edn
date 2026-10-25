@@ -22,8 +22,9 @@
         {:git/url "https://github.com/kotoba-lang/langgraph.git"
          :git/sha "577a59a9d5eb3ef90b81342f4673973f481ff7f4"}
         io.github.kotoba-lang/esim
-        {:git/url "https://github.com/kotoba-lang/esim.git"
-         :git/sha "7bfa343adad0c60282c5fde104e45c083d1df57d"}
+        {:git/url "https://github.com/kotoba-lang/kotoba.git"
+         :git/sha "3dfb77e29a541416bfd6a39aee202ab770ddf952"
+         :deps/root "lib/kotoba.esim"}
         ;; The HTTP surface's JSON codec. com.sun.net.httpserver is JDK-provided,
         ;; so the server itself needs no dependency.
         ;;
@@ -41,7 +42,8 @@
   :dev {:override-deps
         {io.github.com-junkawasaki/langgraph-clj {:local/root "../../kotoba-lang/langgraph"}
          io.github.kotoba-lang/langchain {:local/root "../../kotoba-lang/langchain"}
-         io.github.kotoba-lang/esim {:local/root "../../kotoba-lang/esim"}}}
+         io.github.kotoba-lang/esim
+        {:local/root "../../kotoba-lang/kotoba/lib/kotoba.esim"}}}
   ;; kbb -M:dev:run  -> drive the demo through one OperationActor
   :run {:main-opts ["-m" "esimprovisioning.sim"]}
   ;; kbb -M:serve    -> the governed HTTP surface a consent surface hands to
