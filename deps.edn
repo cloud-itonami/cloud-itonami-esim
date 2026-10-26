@@ -17,7 +17,10 @@
         ;; kotoba.lang.text, not clojure.string. Pinned as an explicit floor:
         ;; tools.deps takes the NEWEST sha it is shown, so without a floor here
         ;; this repo silently rides whatever a sibling happens to name.
-        io.github.kotoba-lang/text {:git/sha "73bdb13ae7a3d004b44bca08be03a3191157a38f"}
+        io.github.kotoba-lang/text
+        {:git/url "https://github.com/kotoba-lang/kotoba.git"
+         :git/sha "ee440887baf7dfdfc41b84f0f07af31b05ee6b1a"
+         :deps/root "lib/kotoba.text"}
        io.github.com-junkawasaki/langgraph-clj
         {:git/url "https://github.com/kotoba-lang/langgraph.git"
          :git/sha "577a59a9d5eb3ef90b81342f4673973f481ff7f4"}
@@ -32,7 +35,10 @@
         ;; shown): io.github.kotoba-lang/json's json.data-json namespace is a
         ;; clojure.data.json-shaped shim (read-str/write-str/read, :key-fn
         ;; applied recursively) over json.core.
-        io.github.kotoba-lang/json {:git/sha "4e33e06b4d66b365d27a51393a16a0acd660f9be"}}
+        io.github.kotoba-lang/json
+        {:git/url "https://github.com/kotoba-lang/kotoba.git"
+         :git/sha "ee440887baf7dfdfc41b84f0f07af31b05ee6b1a"
+         :deps/root "lib/kotoba.json"}}
  :aliases
  {;; Sibling checkouts for monorepo development. The coordinate is
   ;; io.github.kotoba-lang/langchain because that is what langgraph's own
