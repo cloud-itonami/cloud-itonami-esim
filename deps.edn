@@ -47,7 +47,8 @@
   ;; therefore a no-op.
   :dev {:override-deps
         {io.github.com-junkawasaki/langgraph-clj {:local/root "../../kotoba-lang/langgraph"}
-         io.github.kotoba-lang/langchain {:local/root "../../kotoba-lang/langchain"}
+         io.github.kotoba-lang/langchain
+        {:local/root "../../kotoba-lang/kotoba/lib/kotoba.langchain"}
          io.github.kotoba-lang/esim
         {:local/root "../../kotoba-lang/kotoba/lib/kotoba.esim"}}}
   ;; kbb -M:dev:run  -> drive the demo through one OperationActor
